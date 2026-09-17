@@ -66,6 +66,10 @@ export default function App() {
     }
 
     if (data) setUserData(prev => ({ ...prev, ...data }));
+    if (data) {
+      const nextUserData = { ...userData, ...data };
+      localStorage.setItem("ff_user", JSON.stringify(nextUserData));
+    }
 
     if (!isAuthenticated && target !== "auth") {
       setPage("auth");

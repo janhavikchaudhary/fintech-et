@@ -15,7 +15,9 @@ cp .env.example .env
 uvicorn main:app --reload --port 8000
 ```
 
-API base URL from frontend: `http://localhost:8000`
+The frontend calls `/api` by default. In local development, Vite proxies that path to
+`http://localhost:8000`; in Vercel, the same path is served by the included Python
+function. Set `VITE_API_URL` only when deploying the API to a separate origin.
 
 ### Key endpoints
 
@@ -34,6 +36,21 @@ npm run dev
 ```
 
 Open Vite local URL (typically `http://localhost:5173`).
+
+## Deploy on Vercel
+
+This repository is configured for a single Vercel project: Vite builds the frontend
+and `api/index.py` exposes the FastAPI backend under `/api/*`.
+
+1. Import the repository into Vercel and leave the root directory as the repository root.
+2. Add `OPENAI_API_KEY` in **Settings → Environment Variables** if you want pitch-deck
+   extraction and intro-email generation. Profile registration and deterministic matching
+   work without it.
+3. Deploy. No frontend environment variable is needed for the default same-origin API.
+
+> The prototype uses in-memory storage. Vercel functions can be recreated between
+> requests, so replace the dictionaries in `backend/main.py` with a persistent database
+> before relying on stored profiles in production.
 
 ### Auth flow notes
 
