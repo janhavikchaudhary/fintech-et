@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { api, type Investor, type Startup } from "../api";
 
 const SECTORS = [
   "Fintech", "SaaS", "HealthTech", "EdTech", "CleanTech",
@@ -516,14 +517,45 @@ function InvestorForm({ onSubmit, onBack }: { onSubmit: (form: any) => void; onB
 export default function OnboardingPage({ onNavigate }: { onNavigate?: (screen: string, data?: any) => void }) {
   const [screen, setScreen] = useState("role");
   const [role, setRole] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   const handleRoleSelect = (r: string) => {
     setRole(r);
     setScreen("form");
   };
 
-  const handleSubmit = (form: any) => {
-    onNavigate?.("discover", { role, ...form });
+  const handleSubmit = async (form: any) => {
+    setError("");
+    try {
+      if (role === "investor") {
+        const investor = await api<Investor>("/investor/register", {
+          method: "POST",
+          body: JSON.stringify({
+            partner_name: form.name,
+            firm_name: form.firm,
+            thesis: form.thesis,
+            sectors: form.sectors.join(", ") || "any",
+            stages: form.stages.join(", ") || "any",
+          }),
+        });
+        onNavigate?.("dashboard", { role: "investor", ...form, investorId: investor.investor_id });
+      } else {
+        const startup = await api<Startup>("/startup/register", {
+          method: "POST",
+          body: JSON.stringify({
+            company_name: form.company,
+            one_liner: form.tagline,
+            sector: form.sectors.join(", ") || "General",
+            stage: form.stage || "Pre-seed",
+            description: form.description,
+            raise: form.raise,
+          }),
+        });
+        onNavigate?.("discover", { role: "startup", ...form, startupId: startup.startup_id });
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to save your profile.");
+    }
   };
 
   return (
@@ -575,6 +607,7 @@ export default function OnboardingPage({ onNavigate }: { onNavigate?: (screen: s
           <InvestorForm onSubmit={handleSubmit} onBack={() => setScreen("role")} />
         )}
       </div>
+      {error && <div role="alert" style={{ position: "fixed", bottom: "24px", left: "50%", transform: "translateX(-50%)", background: "#32131a", border: "1px solid #d86b7a", borderRadius: "8px", padding: "12px 16px", color: "#ffd6dc", zIndex: 200 }}>{error}</div>}
     </div>
   );
 }

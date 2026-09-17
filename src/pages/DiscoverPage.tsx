@@ -1,4 +1,5 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
+import { api } from "../api";
 
 const MOCK_INVESTORS = [
   {
@@ -451,6 +452,24 @@ export default function DiscoverPage({ onNavigate, userData }: { onNavigate?: (s
   const [connected, setConnected] = useState<typeof MOCK_INVESTORS>([]);
   const [toast, setToast] = useState<typeof MOCK_INVESTORS[0] | null>(null);
   const [filter, setFilter] = useState("All");
+  const [apiMessage, setApiMessage] = useState("");
+
+  useEffect(() => {
+    if (!userData?.startupId) return;
+    api<{ matches: Array<{ investor_id: string; investor_name: string; firm: string; score: number; reasoning: string }>; message?: string }>(`/startup/${userData.startupId}/matches`)
+      .then((result) => {
+        setApiMessage(result.message || "");
+        if (result.matches.length) setCards(result.matches.map((match, index) => ({
+          ...MOCK_INVESTORS[index % MOCK_INVESTORS.length],
+          id: match.investor_id,
+          name: match.investor_name,
+          firm: match.firm || "Independent investor",
+          score: Math.round(match.score * 100),
+          matchReason: match.reasoning,
+        })));
+      })
+      .catch((error: Error) => setApiMessage(error.message));
+  }, [userData?.startupId]);
 
   const filters = ["All", "Fintech", "SaaS", "AI/ML", "HealthTech"];
 
@@ -583,6 +602,7 @@ export default function DiscoverPage({ onNavigate, userData }: { onNavigate?: (s
               {visibleCards.length} REMAINING
             </span>
           </div>
+          {apiMessage && <p style={{ color: "rgba(196,199,242,0.45)", fontSize: "12px" }}>{apiMessage}</p>}
         </div>
 
         <div style={{

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import OpenAI
 from dotenv import load_dotenv
 import PyPDF2
@@ -20,7 +20,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=api_key) if api_key else None
 
 # ── In-memory storage (resets on restart, fine for prototype) ──
 startups = {}    # startup_id → dict
@@ -38,6 +39,8 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
 
 # ── Helper: call GPT ──
 def ask_gpt(system: str, user: str) -> str:
+    if client is None:
+        raise HTTPException(503, "OPENAI_API_KEY is required for this AI-powered action")
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -141,24 +144,14 @@ Thesis: {investor.get('thesis')}
 Preferred sectors: {investor.get('sectors', 'any')}
 Preferred stages: {investor.get('stages', 'any')}"""
 
-        try:
-            raw = ask_gpt(system, user)
-            cleaned = raw.strip().strip("```json").strip("```").strip()
-            result = json.loads(cleaned)
-            results.append({
-                "investor_id": inv_id,
-                "investor_name": investor.get("partner_name"),
-                "firm": investor.get("firm_name", ""),
-                "score": result.get("score", 0),
-                "reasoning": result.get("reasoning", ""),
-            })
-        except Exception as e:
-            results.append({
-                "investor_id": inv_id,
-                "investor_name": investor.get("partner_name"),
-                "score": 0,
-                "reasoning": f"Scoring failed: {e}",
-            })
+        score, reasoning = score_match(startup, investor)
+        results.append({
+            "investor_id": inv_id,
+            "investor_name": investor.get("partner_name"),
+            "firm": investor.get("firm_name", ""),
+            "score": score,
+            "reasoning": reasoning,
+        })
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return {"startup_id": startup_id, "matches": results}
@@ -174,6 +167,33 @@ class InvestorRequest(BaseModel):
     thesis: str
     sectors: str = "any"
     stages: str = "any"
+
+
+class StartupRequest(BaseModel):
+    company_name: str
+    one_liner: str = ""
+    sector: str = "General"
+    stage: str = "Pre-seed"
+    description: str = ""
+    raise_: str = Field(default="", alias="raise")
+
+
+def score_match(startup: dict, investor: dict) -> tuple[float, str]:
+    """Provide fast, deterministic matching when no model call is necessary."""
+    sectors = investor.get("sectors", "").lower()
+    stages = investor.get("stages", "").lower()
+    startup_sector = startup.get("sector", "").lower()
+    startup_stage = startup.get("stage", "").lower()
+    sector_match = sectors == "any" or any(item.strip() in startup_sector for item in sectors.split(","))
+    stage_match = stages == "any" or startup_stage in stages
+    score = 0.45 + (0.3 if sector_match else 0) + (0.2 if stage_match else 0)
+    score = min(score, 0.98)
+    reason = (
+        f"{investor.get('partner_name')} has a {('strong' if sector_match else 'partial')} sector fit "
+        f"with {startup.get('company_name')}. "
+        f"The {startup.get('stage', 'current')} stage is {('within' if stage_match else 'outside')} their stated focus."
+    )
+    return score, reason
 
 class MarketChatRequest(BaseModel):
     question: str
@@ -194,6 +214,23 @@ def register_investor(body: InvestorRequest):
     }
     investors[investor_id] = investor
     return {"investor_id": investor_id, **investor}
+
+
+@app.post("/startup/register")
+def register_startup(body: StartupRequest):
+    """Create a startup profile from the frontend onboarding form."""
+    startup_id = str(uuid.uuid4())
+    startup = {
+        "id": startup_id,
+        "company_name": body.company_name,
+        "one_liner": body.one_liner,
+        "sector": body.sector,
+        "stage": body.stage,
+        "description": body.description,
+        "ask_usd": None,
+    }
+    startups[startup_id] = startup
+    return {"startup_id": startup_id, **startup}
 
 
 @app.get("/investor/{investor_id}")
@@ -236,27 +273,16 @@ STARTUP:
 Ask: ${startup.get('ask_usd') or 'unknown'}
 MRR: ${startup.get('mrr_usd') or 'pre-revenue'}"""
 
-        try:
-            raw = ask_gpt(system, user)
-            cleaned = raw.strip().strip("```json").strip("```").strip()
-            result = json.loads(cleaned)
-            results.append({
-                "startup_id": s_id,
-                "company_name": startup.get("company_name"),
-                "sector": startup.get("sector"),
-                "stage": startup.get("stage"),
-                "score": result.get("score", 0),
-                "summary": result.get("summary", ""),
-                "reasoning": result.get("reasoning", ""),
-            })
-        except Exception as e:
-            results.append({
-                "startup_id": s_id,
-                "company_name": startup.get("company_name"),
-                "score": 0,
-                "summary": "Scoring failed",
-                "reasoning": str(e),
-            })
+        score, reasoning = score_match(startup, investor)
+        results.append({
+            "startup_id": s_id,
+            "company_name": startup.get("company_name"),
+            "sector": startup.get("sector"),
+            "stage": startup.get("stage"),
+            "score": score,
+            "summary": f"{startup.get('stage', 'Early-stage')} {startup.get('sector', 'startup')} company — {startup.get('one_liner') or 'matched to your thesis'}",
+            "reasoning": reasoning,
+        })
 
     results.sort(key=lambda x: x["score"], reverse=True)
     return {"investor_id": investor_id, "deals": results}
@@ -404,4 +430,3 @@ def get_market_chat_response(body: MarketChatRequest):
             "Should I rank top 3 opportunities by risk-adjusted confidence?",
         ],
     }
-
