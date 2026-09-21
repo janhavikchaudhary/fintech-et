@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from openai import OpenAI
+from groq import Groq
 from dotenv import load_dotenv
 import PyPDF2
 import io
@@ -20,8 +20,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key) if api_key else None
+api_key = os.getenv("GROQ_API_KEY")
+client = Groq(api_key=api_key) if api_key else None
 
 # ── In-memory storage (resets on restart, fine for prototype) ──
 startups = {}    # startup_id → dict
@@ -37,12 +37,12 @@ def extract_pdf_text(pdf_bytes: bytes) -> str:
     return text
 
 
-# ── Helper: call GPT ──
-def ask_gpt(system: str, user: str) -> str:
+# ── Helper: call Groq ──
+def ask_groq(system: str, user: str) -> str:
     if client is None:
-        raise HTTPException(503, "OPENAI_API_KEY is required for this AI-powered action")
+        raise HTTPException(503, "GROQ_API_KEY is required for this AI-powered action")
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="llama-3.3-70b-versatile",
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -58,7 +58,7 @@ def ask_gpt(system: str, user: str) -> str:
 
 @app.post("/startup/upload-deck")
 async def upload_deck(file: UploadFile = File(...)):
-    """Upload a pitch deck PDF — extracts structured profile using GPT."""
+    """Upload a pitch deck PDF and extract a structured profile using Groq."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files accepted")
 
@@ -80,14 +80,14 @@ async def upload_deck(file: UploadFile = File(...)):
 }
 Return ONLY the JSON. No markdown, no explanation."""
 
-    raw = ask_gpt(system, raw_text[:8000])
+    raw = ask_groq(system, raw_text[:8000])
 
     try:
-        # strip markdown fences if GPT adds them
+        # Strip markdown fences if the model adds them.
         cleaned = raw.strip().strip("```json").strip("```").strip()
         profile = json.loads(cleaned)
     except Exception:
-        raise HTTPException(422, f"GPT returned invalid JSON: {raw[:200]}")
+        raise HTTPException(422, f"Groq returned invalid JSON: {raw[:200]}")
 
     startup_id = str(uuid.uuid4())
     profile["id"] = startup_id
@@ -315,7 +315,7 @@ Thesis: {investor.get('thesis')}
 
 Keep it under 150 words. Include subject line."""
 
-    email = ask_gpt(system, user)
+    email = ask_groq(system, user)
     return {"startup_id": startup_id, "investor_id": investor_id, "intro_email": email}
 
 

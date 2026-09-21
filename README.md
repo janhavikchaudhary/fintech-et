@@ -11,7 +11,7 @@ The system follows a clean three-layer architecture, client interface, API layer
 cd backend
 pip install -r requirements.txt
 cp .env.example .env
-# paste your real OPENAI_API_KEY in backend/.env
+# paste your real GROQ_API_KEY in backend/.env
 uvicorn main:app --reload --port 8000
 ```
 
@@ -43,7 +43,7 @@ This repository is configured for a single Vercel project: Vite builds the front
 and `api/index.py` exposes the FastAPI backend under `/api/*`.
 
 1. Import the repository into Vercel and leave the root directory as the repository root.
-2. Add `OPENAI_API_KEY` in **Settings → Environment Variables** if you want pitch-deck
+2. Add `GROQ_API_KEY` in **Settings → Environment Variables** if you want pitch-deck
    extraction and intro-email generation. Profile registration and deterministic matching
    work without it.
 3. Deploy. No frontend environment variable is needed for the default same-origin API.
