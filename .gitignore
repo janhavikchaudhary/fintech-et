@@ -1,0 +1,5 @@
+venturelink.db
+backend/venturelink.db
+.env
+backend/.env
+node_modules/

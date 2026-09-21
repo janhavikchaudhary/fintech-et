@@ -19,6 +19,85 @@ The frontend calls `/api` by default. In local development, Vite proxies that pa
 `http://localhost:8000`; in Vercel, the same path is served by the included Python
 function. Set `VITE_API_URL` only when deploying the API to a separate origin.
 
+### VentureLink prototype auth and data
+
+The root `src/` application is the frontend. `api/index.py` imports the FastAPI app
+from `backend/main.py`; `fintech-frontend/` is not used by the root Vite build.
+
+The app uses Google OAuth only. It does not collect or store passwords. Successful
+Google sign-in creates or updates a local VentureLink user and establishes an
+HTTP-only signed session cookie. Local development uses SQLite at
+`backend/venturelink.db` by default. Set `DATABASE_URL` to a PostgreSQL or Supabase
+connection string for persistent hosted data.
+
+New authenticated routes include:
+
+- `GET /auth/me`, `GET /auth/google`, `GET /auth/google/callback`, `POST /auth/logout`
+- `GET /profiles/me`, `PUT /profiles/startup`, `PUT /profiles/investor`
+- `GET /discover`
+- `POST /connections`, `GET /connections`, `POST /connections/{id}/accept`
+- `POST /ai/chat`, `POST /ai/intro/{target_id}`
+
+Matching is deterministic and transparent: sector, stage, geography, and funding or
+ticket data contribute to a percentage and alignment reasons. Groq is used only for
+natural-language explanations, introductions, and assistant answers; profile data
+comes from the database.
+
+### Google OAuth setup
+
+1. In Google Cloud Console, create or select a project.
+2. Configure the OAuth consent screen as an External or Internal app, add the app name,
+  support email, developer contact email, and the `openid`, `email`, and `profile`
+  scopes. Add test users while the app is in testing.
+3. Create an OAuth 2.0 Client ID with application type `Web application`.
+4. Add this exact local authorized redirect URI:
+  `http://localhost:5173/api/auth/google/callback`
+5. For Vercel, add the deployed redirect URI:
+  `https://YOUR-VERCEL-DOMAIN/api/auth/google/callback`
+6. Copy the client ID and secret into the backend environment only. Never expose them
+  through a `VITE_*` variable.
+
+### Environment variables
+
+Copy `backend/.env.example` to `backend/.env` and set:
+
+```env
+DATABASE_URL=sqlite:///./venturelink.db
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=http://localhost:5173/api/auth/google/callback
+SESSION_SECRET=replace-with-a-long-random-value
+FRONTEND_URL=http://localhost:5173
+SESSION_COOKIE_SECURE=false
+GROQ_API_KEY=gsk-your-key-here
+```
+
+For Supabase, create a PostgreSQL database and set `DATABASE_URL` to its pooled or
+direct connection string, for example `postgresql://USER:PASSWORD@HOST:5432/postgres`.
+The application creates its tables on startup; no migration command is needed for
+this prototype. Install dependencies and run locally with:
+
+```bash
+pip install -r backend/requirements.txt
+cd backend
+python -m uvicorn main:app --reload --port 8000
+```
+
+In another terminal, from the repository root, run `npm install` and `npm run dev`.
+
+### Vercel deployment
+
+Deploy from the repository root. Add `DATABASE_URL`, `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `SESSION_SECRET`, `FRONTEND_URL`,
+`SESSION_COOKIE_SECURE=true`, and `GROQ_API_KEY` to the Vercel project environment.
+Update Google Cloud Console with the exact Vercel callback URI before testing login.
+Use PostgreSQL or Supabase in Vercel; the local SQLite fallback is not suitable for
+serverless persistence.
+
+Prototype limitations: database tables are initialized with `create_all`, OAuth has
+no account linking beyond Google identity, there is no real-time messaging, and the
+in-memory legacy routes remain for compatibility with the original demo endpoints.
+
 ### Key endpoints
 
 - `POST /startup/upload-deck` — upload a startup pitch deck PDF

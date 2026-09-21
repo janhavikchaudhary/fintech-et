@@ -12,21 +12,20 @@ export default function InvestorDashboardPage({ onNavigate, userData }: { onNavi
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    if (!userData?.investorId) return;
-    api<{ deals: Array<{ company_name: string; score: number; stage?: string; sector?: string; summary?: string }>; message?: string }>(`/investor/${userData.investorId}/dealflow`)
+    api<{ items: Array<{ name: string; profile: any; match: { percentage: number; strong_alignment: string[]; potential_mismatch: string[] } }>; message?: string }>("/discover")
       .then((result) => {
         setMessage(result.message || "");
-        if (result.deals.length) setDeals(result.deals.map((deal) => ({
-          company: deal.company_name,
-          score: Math.round(deal.score * 100),
-          stage: deal.stage || "Pre-seed",
-          sector: deal.sector || "General",
-          ask: "TBD",
-          note: deal.summary || "Matched to your investment thesis.",
+        if (result.items.length) setDeals(result.items.map((deal) => ({
+          company: deal.profile.company_name || deal.name,
+          score: deal.match.percentage,
+          stage: deal.profile.stage || "Pre-seed",
+          sector: deal.profile.industry || "General",
+          ask: deal.profile.funding_required || "TBD",
+          note: [...deal.match.strong_alignment, ...deal.match.potential_mismatch].join(" · ") || "Matched to your investment thesis.",
         })));
       })
       .catch((error: Error) => setMessage(error.message));
-  }, [userData?.investorId]);
+  }, []);
 
   return (
     <div style={{ minHeight: "100vh", background: "#03030d", color: "#c4c7f2", fontFamily: "'Syne', sans-serif", padding: "28px" }}>

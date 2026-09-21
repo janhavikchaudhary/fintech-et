@@ -157,12 +157,14 @@ function MatchCard({ investor, onPass, onConnect, active, behind }: { investor: 
     const q = chatInput.trim();
     setChatInput("");
     setChatMessages(m => [...m, { role: "user", text: q }]);
-    setTimeout(() => {
-      setChatMessages(m => [...m, {
-        role: "ai",
-        text: `Based on ${investor.name}'s investment history and thesis, ${q.toLowerCase().includes("why") ? investor.matchReason : `${investor.firm} has backed similar profiles in the past. Their portfolio of ${investor.portfolio.join(", ")} shows strong affinity with your vertical.`}`,
-      }]);
-    }, 800);
+    api<{ answer: string }>("/ai/chat", {
+      method: "POST",
+      body: JSON.stringify({ question: `${q}\nFocus on this profile: ${investor.name} at ${investor.firm}. Match evidence: ${investor.matchReason}` }),
+    }).then(result => {
+      setChatMessages(m => [...m, { role: "ai", text: result.answer }]);
+    }).catch((error: Error) => {
+      setChatMessages(m => [...m, { role: "ai", text: error.message }]);
+    });
   };
 
   const rotation = dragX * 0.04;
@@ -453,23 +455,42 @@ export default function DiscoverPage({ onNavigate, userData }: { onNavigate?: (s
   const [toast, setToast] = useState<typeof MOCK_INVESTORS[0] | null>(null);
   const [filter, setFilter] = useState("All");
   const [apiMessage, setApiMessage] = useState("");
+  const isInvestor = userData?.role === "investor";
 
   useEffect(() => {
-    if (!userData?.startupId) return;
-    api<{ matches: Array<{ investor_id: string; investor_name: string; firm: string; score: number; reasoning: string }>; message?: string }>(`/startup/${userData.startupId}/matches`)
+    api<{ items: Array<{ user_id: string; name: string; profile_picture?: string; profile: any; match: { percentage: number; strong_alignment: string[]; potential_mismatch: string[] } }>; message?: string }>("/discover")
       .then((result) => {
         setApiMessage(result.message || "");
-        if (result.matches.length) setCards(result.matches.map((match, index) => ({
-          ...MOCK_INVESTORS[index % MOCK_INVESTORS.length],
-          id: match.investor_id,
-          name: match.investor_name,
-          firm: match.firm || "Independent investor",
-          score: Math.round(match.score * 100),
-          matchReason: match.reasoning,
-        })));
+        if (result.items.length) setCards(result.items.map((item, index) => {
+          const profile = item.profile;
+          const name = isInvestor ? profile.company_name || item.name : profile.name_firm || item.name;
+          return {
+            ...MOCK_INVESTORS[index % MOCK_INVESTORS.length],
+            id: item.user_id,
+            name,
+            firm: isInvestor ? profile.one_liner || "Startup" : profile.name_firm || item.name,
+            avatar: name.split(" ").map((part: string) => part[0]).join("").slice(0, 2),
+            location: isInvestor ? profile.location || "Location not specified" : profile.geography || "Global",
+            stage: isInvestor ? [profile.stage || "Pre-seed"] : profile.stages || [],
+            sectors: profile.sectors?.length ? profile.sectors : [profile.industry || "General"],
+            ticket: isInvestor ? profile.funding_required || "Not specified" : profile.ticket_size || "Not specified",
+            portfolio: isInvestor ? [profile.traction || "Traction not specified"] : MOCK_INVESTORS[index % MOCK_INVESTORS.length].portfolio,
+            thesis: profile.thesis || profile.description || "Profile information",
+            score: item.match.percentage,
+            matchReason: [...item.match.strong_alignment.map((reason: string) => `Strong alignment: ${reason}`), ...item.match.potential_mismatch.map((reason: string) => `Potential mismatch: ${reason}`)].join(". "),
+          };
+        }));
       })
       .catch((error: Error) => setApiMessage(error.message));
-  }, [userData?.startupId]);
+    api<{ connections: Array<{ user_id: string; name: string; action: string }> }>("/connections")
+      .then((result) => setConnected(result.connections.map((connection, index) => ({
+        ...MOCK_INVESTORS[index % MOCK_INVESTORS.length],
+        id: connection.user_id,
+        name: connection.name,
+        score: 0,
+      }))))
+      .catch(() => undefined);
+  }, []);
 
   const filters = ["All", "Fintech", "SaaS", "AI/ML", "HealthTech"];
 
@@ -478,12 +499,16 @@ export default function DiscoverPage({ onNavigate, userData }: { onNavigate?: (s
   );
 
   const handlePass = () => {
-    setCards(prev => prev.slice(1));
+    const top = visibleCards[0];
+    if (!top) return;
+    api("/connections", { method: "POST", body: JSON.stringify({ target_id: top.id, target_type: isInvestor ? "startup" : "investor", action: "pass" }) }).catch(() => undefined);
+    setCards(prev => prev.filter(c => c.id !== top.id));
   };
 
   const handleConnect = () => {
     const top = visibleCards[0];
     if (!top) return;
+    api("/connections", { method: "POST", body: JSON.stringify({ target_id: top.id, target_type: isInvestor ? "startup" : "investor", action: "connect" }) }).catch((error: Error) => setApiMessage(error.message));
     setConnected(prev => [...prev, top]);
     setToast(top);
     setCards(prev => prev.filter(c => c.id !== top.id));

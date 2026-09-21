@@ -1,26 +1,9 @@
-import { useState, type CSSProperties } from "react";
+import { useState } from "react";
 
 type Role = "startup" | "investor";
 
-export default function AuthPage({
-  onAuthSuccess,
-}: {
-  onAuthSuccess: (data: { role: Role; name: string; email: string }) => void;
-}) {
+export default function AuthPage() {
   const [role, setRole] = useState<Role>("startup");
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-
-  const submit = () => {
-    if (!name.trim() || !email.trim() || !password.trim()) {
-      setError("Please fill all fields.");
-      return;
-    }
-    setError("");
-    onAuthSuccess({ role, name: name.trim(), email: email.trim() });
-  };
 
   return (
     <div
@@ -49,7 +32,7 @@ export default function AuthPage({
           Sign in
         </h1>
         <p style={{ marginTop: 0, marginBottom: "20px", color: "rgba(196,199,242,0.5)" }}>
-          Choose your role to enter the right dashboard.
+          Continue with Google to create or access your VentureLink profile.
         </p>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "16px" }}>
@@ -73,33 +56,8 @@ export default function AuthPage({
           ))}
         </div>
 
-        <div style={{ display: "grid", gap: "10px" }}>
-          <input
-            placeholder="Full name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            style={inputStyle}
-          />
-          <input
-            placeholder="Email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={inputStyle}
-          />
-          <input
-            placeholder="Password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={inputStyle}
-          />
-        </div>
-
-        {error && <p style={{ color: "#ff8c8c", fontSize: "13px", marginTop: "10px" }}>{error}</p>}
-
         <button
-          onClick={submit}
+          onClick={() => { window.location.href = `/api/auth/google?role=${role}`; }}
           style={{
             width: "100%",
             marginTop: "14px",
@@ -112,18 +70,10 @@ export default function AuthPage({
             cursor: "pointer",
           }}
         >
-          Continue
+          Continue with Google
         </button>
       </div>
     </div>
   );
 }
 
-const inputStyle: CSSProperties = {
-  background: "rgba(196,199,242,0.04)",
-  border: "1px solid rgba(196,199,242,0.14)",
-  borderRadius: "8px",
-  color: "#c4c7f2",
-  padding: "12px",
-  outline: "none",
-};

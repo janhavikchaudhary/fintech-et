@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, type Investor, type Startup } from "../api";
+import { api } from "../api";
 
 const SECTORS = [
   "Fintech", "SaaS", "HealthTech", "EdTech", "CleanTech",
@@ -514,7 +514,7 @@ function InvestorForm({ onSubmit, onBack }: { onSubmit: (form: any) => void; onB
   );
 }
 
-export default function OnboardingPage({ onNavigate }: { onNavigate?: (screen: string, data?: any) => void }) {
+export default function OnboardingPage({ onNavigate, onProfileSaved }: { onNavigate?: (screen: string, data?: any) => void; onProfileSaved?: (profile: any) => void }) {
   const [screen, setScreen] = useState("role");
   const [role, setRole] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -528,30 +528,36 @@ export default function OnboardingPage({ onNavigate }: { onNavigate?: (screen: s
     setError("");
     try {
       if (role === "investor") {
-        const investor = await api<Investor>("/investor/register", {
-          method: "POST",
+        const investor = await api<any>("/profiles/investor", {
+          method: "PUT",
           body: JSON.stringify({
-            partner_name: form.name,
-            firm_name: form.firm,
+            name_firm: form.firm || form.name,
+            description: form.thesis,
             thesis: form.thesis,
-            sectors: form.sectors.join(", ") || "any",
-            stages: form.stages.join(", ") || "any",
+            sectors: form.sectors,
+            stages: form.stages,
+            ticket_size: form.tickets.join(", "),
+            geography: form.regions.join(", "),
           }),
         });
-        onNavigate?.("dashboard", { role: "investor", ...form, investorId: investor.investor_id });
+        onProfileSaved?.(investor);
+        onNavigate?.("dashboard", { role: "investor", ...form });
       } else {
-        const startup = await api<Startup>("/startup/register", {
-          method: "POST",
+        const startup = await api<any>("/profiles/startup", {
+          method: "PUT",
           body: JSON.stringify({
             company_name: form.company,
             one_liner: form.tagline,
-            sector: form.sectors.join(", ") || "General",
+            industry: form.sectors[0] || "General",
+            sectors: form.sectors,
             stage: form.stage || "Pre-seed",
             description: form.description,
-            raise: form.raise,
+            funding_required: form.raise,
+            website: form.website,
           }),
         });
-        onNavigate?.("discover", { role: "startup", ...form, startupId: startup.startup_id });
+        onProfileSaved?.(startup);
+        onNavigate?.("discover", { role: "startup", ...form });
       }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Unable to save your profile.");

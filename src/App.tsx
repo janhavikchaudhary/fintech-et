@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "./api";
 import LandingPage from "./pages/LandingPageFull";
 import OnboardingPage from "./pages/OnboardingPage";
 import DiscoverPage from "./pages/DiscoverPage";
@@ -9,67 +10,44 @@ import InvestorDashboardPage from "./pages/InvestorDashboardPage";
 type Page = "auth" | "landing" | "onboarding" | "discover" | "dashboard" | "investorDashboard";
 type Role = "startup" | "investor";
 
-interface UserData {
+export interface UserData {
+  user_id?: string;
   role?: string;
   name?: string;
   email?: string;
-  company?: string;
-  website?: string;
-  tagline?: string;
-  description?: string;
-  stage?: string;
-  raise?: string;
-  sectors?: string[];
-  regions?: string[];
-  firm?: string;
-  thesis?: string;
-  stages?: string[];
-  tickets?: string[];
+  profile_picture?: string;
+  startup?: Record<string, any>;
+  investor?: Record<string, any>;
 }
 
 export default function App() {
-  const initialAuth = (() => {
-    try {
-      return localStorage.getItem("ff_auth") === "1";
-    } catch {
-      return false;
-    }
-  })();
+  const [page, setPage] = useState<Page>("auth");
+  const [userData, setUserData] = useState<UserData>({});
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const initialUser = (() => {
-    try {
-      const raw = localStorage.getItem("ff_user");
-      return raw ? (JSON.parse(raw) as UserData) : {};
-    } catch {
-      return {};
-    }
-  })();
-
-  const initialPage: Page = initialAuth
-    ? initialUser.role === "investor"
-      ? "investorDashboard"
-      : "dashboard"
-    : "auth";
-
-  const [page, setPage] = useState<Page>(initialPage);
-  const [userData, setUserData] = useState<UserData>(initialUser);
-  const [isAuthenticated, setIsAuthenticated] = useState(initialAuth);
+  useEffect(() => {
+    api<UserData>("/auth/me")
+      .then((user) => {
+        setUserData(user);
+        setIsAuthenticated(true);
+        setPage(user.role === "investor" && user.investor ? "investorDashboard" : user.role === "startup" && user.startup ? "dashboard" : "onboarding");
+      })
+      .catch(() => setPage("auth"))
+      .finally(() => setLoading(false));
+  }, []);
 
   const handleNavigate = (target: string, data?: UserData) => {
     if (target === "logout") {
-      setIsAuthenticated(false);
-      setUserData({});
-      setPage("auth");
-      localStorage.removeItem("ff_auth");
-      localStorage.removeItem("ff_user");
+      api("/auth/logout", { method: "POST" }).finally(() => {
+        setIsAuthenticated(false);
+        setUserData({});
+        setPage("auth");
+      });
       return;
     }
 
     if (data) setUserData(prev => ({ ...prev, ...data }));
-    if (data) {
-      const nextUserData = { ...userData, ...data };
-      localStorage.setItem("ff_user", JSON.stringify(nextUserData));
-    }
 
     if (!isAuthenticated && target !== "auth") {
       setPage("auth");
@@ -85,31 +63,23 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const handleAuthSuccess = (authData: { role: Role; name: string; email: string }) => {
-    const nextUserData = {
-      ...userData,
-      role: authData.role,
-      name: authData.name,
-      email: authData.email,
-    };
-
-    setIsAuthenticated(true);
-    setUserData(nextUserData);
-    localStorage.setItem("ff_auth", "1");
-    localStorage.setItem("ff_user", JSON.stringify(nextUserData));
-    setPage("onboarding");
+  const handleProfileSaved = (data: UserData) => {
+    setUserData(data);
+    setPage(data.role === "investor" ? "investorDashboard" : "dashboard");
   };
+
+  if (loading) return <div style={{ minHeight: "100vh", background: "#03030d" }} />;
 
   return (
     <div style={{ margin: 0, padding: 0 }}>
       {page === "auth" && (
-        <AuthPage onAuthSuccess={handleAuthSuccess} />
+        <AuthPage />
       )}
       {page === "landing" && (
         <LandingPage onNavigate={handleNavigate} />
       )}
       {page === "onboarding" && (
-        <OnboardingPage onNavigate={handleNavigate} />
+        <OnboardingPage onNavigate={handleNavigate} onProfileSaved={handleProfileSaved} userData={userData} />
       )}
       {page === "discover" && (
         <DiscoverPage onNavigate={handleNavigate} userData={userData} />

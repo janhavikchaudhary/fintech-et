@@ -1,23 +1,60 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
 from groq import Groq
 from dotenv import load_dotenv
+import httpx
 import PyPDF2
 import io
 import os
 import json
+import secrets
+from urllib.parse import urlencode
 import uuid
 
 load_dotenv()
 
+try:
+    from .database import (
+        Connection,
+        InvestorProfile,
+        SessionLocal,
+        StartupProfile,
+        User,
+        json_dumps,
+        json_loads,
+        profile_public,
+        utcnow,
+    )
+except ImportError:
+    from database import (
+        Connection,
+        InvestorProfile,
+        SessionLocal,
+        StartupProfile,
+        User,
+        json_dumps,
+        json_loads,
+        profile_public,
+        utcnow,
+    )
+
 app = FastAPI(title="VentureLink Prototype")
 
 app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET") or secrets.token_urlsafe(32),
+    https_only=os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true",
+    same_site="lax",
+)
+
+app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 api_key = os.getenv("GROQ_API_KEY")
@@ -198,6 +235,339 @@ def score_match(startup: dict, investor: dict) -> tuple[float, str]:
 class MarketChatRequest(BaseModel):
     question: str
     portfolio: list[str] | None = None
+
+
+class StartupProfileRequest(BaseModel):
+    company_name: str
+    one_liner: str = ""
+    description: str = ""
+    industry: str = "General"
+    stage: str = "Pre-seed"
+    location: str = ""
+    funding_required: str = ""
+    traction: str = ""
+    website: str = ""
+    sectors: list[str] = []
+
+
+class InvestorProfileRequest(BaseModel):
+    name_firm: str
+    description: str = ""
+    thesis: str = ""
+    sectors: list[str] = []
+    stages: list[str] = []
+    ticket_size: str = ""
+    geography: str = ""
+
+
+class ConnectionRequest(BaseModel):
+    target_id: str
+    target_type: str
+    action: str = "connect"
+
+
+class AiChatRequest(BaseModel):
+    question: str
+
+
+def get_authenticated_user(request: Request, db):
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(401, "Google sign-in is required")
+    user = db.get(User, user_id)
+    if not user:
+        request.session.clear()
+        raise HTTPException(401, "Your session has expired")
+    return user
+
+
+def profile_for_user(db, user: User) -> dict:
+    return profile_public(
+        user,
+        db.get(StartupProfile, user.id),
+        db.get(InvestorProfile, user.id),
+    )
+
+
+def score_profiles(startup: StartupProfile, investor: InvestorProfile) -> tuple[int, list[str], list[str]]:
+    startup_sectors = {item.lower() for item in json_loads(startup.sectors_json)}
+    if startup.industry:
+        startup_sectors.add(startup.industry.lower())
+    investor_sectors = {item.lower() for item in json_loads(investor.sectors_json)}
+    investor_stages = {item.lower() for item in json_loads(investor.stages_json)}
+    strong: list[str] = []
+    mismatch: list[str] = []
+    points = 0
+
+    if not investor_sectors or "any" in investor_sectors or startup_sectors & investor_sectors:
+        points += 35
+        strong.append(f"{startup.industry} sector")
+    else:
+        mismatch.append(f"Investor sectors: {', '.join(json_loads(investor.sectors_json)) or 'not specified'}")
+
+    if not investor_stages or "any" in investor_stages or startup.stage.lower() in investor_stages:
+        points += 25
+        strong.append(f"{startup.stage} stage")
+    else:
+        mismatch.append(f"Investor prefers {', '.join(json_loads(investor.stages_json))}")
+
+    if investor.geography and startup.location and investor.geography.lower() in startup.location.lower():
+        points += 20
+        strong.append(startup.location)
+    elif not investor.geography or not startup.location or "global" in investor.geography.lower():
+        points += 15
+    else:
+        mismatch.append(f"Geography: {investor.geography} vs {startup.location}")
+
+    if startup.funding_required and investor.ticket_size:
+        points += 20
+        strong.append(f"Funding range {startup.funding_required}")
+    else:
+        points += 10
+
+    return min(points, 99), strong, mismatch
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        return profile_for_user(db, user)
+
+
+@app.get("/auth/google")
+def auth_google(request: Request, role: str = ""):
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", f"{os.getenv('FRONTEND_URL', 'http://localhost:5173')}/api/auth/google/callback")
+    if not client_id:
+        raise HTTPException(503, "Google OAuth is not configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
+    if role in {"startup", "investor"}:
+        request.session["requested_role"] = role
+    state = secrets.token_urlsafe(32)
+    request.session["oauth_state"] = state
+    params = urlencode({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "offline",
+        "prompt": "select_account",
+    })
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
+
+
+@app.get("/auth/google/callback")
+async def auth_google_callback(request: Request):
+    from fastapi.responses import RedirectResponse
+
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    if request.query_params.get("state") != request.session.pop("oauth_state", None):
+        raise HTTPException(400, "Invalid Google OAuth state")
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(400, "Google OAuth did not return an authorization code")
+
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", f"{frontend_url}/api/auth/google/callback")
+    async with httpx.AsyncClient(timeout=15) as http:
+        token_response = await http.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+            "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        })
+        if token_response.is_error:
+            raise HTTPException(502, "Google token exchange failed")
+        token = token_response.json()
+        user_response = await http.get("https://openidconnect.googleapis.com/v1/userinfo", headers={"Authorization": f"Bearer {token['access_token']}"})
+        if user_response.is_error:
+            raise HTTPException(502, "Google profile lookup failed")
+        google_user = user_response.json()
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.google_id == google_user["sub"]).first()
+        if not user:
+            user = User(
+                google_id=google_user["sub"],
+                email=google_user.get("email", ""),
+                name=google_user.get("name") or google_user.get("email", "VentureLink user"),
+                profile_picture=google_user.get("picture"),
+            )
+            db.add(user)
+        else:
+            user.email = google_user.get("email", user.email)
+            user.name = google_user.get("name") or user.name
+            user.profile_picture = google_user.get("picture") or user.profile_picture
+        if not user.role:
+            requested_role = request.session.pop("requested_role", None)
+            if requested_role in {"startup", "investor"}:
+                user.role = requested_role
+        user.last_login = utcnow()
+        db.commit()
+        request.session["user_id"] = user.id
+
+    return RedirectResponse(f"{frontend_url}/")
+
+
+@app.post("/auth/logout")
+def auth_logout(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
+@app.get("/profiles/me")
+def get_my_profile(request: Request):
+    with SessionLocal() as db:
+        return profile_for_user(db, get_authenticated_user(request, db))
+
+
+@app.put("/profiles/startup")
+def save_startup_profile(body: StartupProfileRequest, request: Request):
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        user.role = "startup"
+        profile = db.get(StartupProfile, user.id) or StartupProfile(user_id=user.id, company_name=body.company_name)
+        for field in ("company_name", "one_liner", "description", "industry", "stage", "location", "funding_required", "traction", "website"):
+            setattr(profile, field, getattr(body, field))
+        profile.sectors_json = json_dumps(body.sectors)
+        db.add(profile)
+        db.commit()
+        return profile_for_user(db, user)
+
+
+@app.put("/profiles/investor")
+def save_investor_profile(body: InvestorProfileRequest, request: Request):
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        user.role = "investor"
+        profile = db.get(InvestorProfile, user.id) or InvestorProfile(user_id=user.id, name_firm=body.name_firm)
+        for field in ("name_firm", "description", "thesis", "ticket_size", "geography"):
+            setattr(profile, field, getattr(body, field))
+        profile.sectors_json = json_dumps(body.sectors)
+        profile.stages_json = json_dumps(body.stages)
+        db.add(profile)
+        db.commit()
+        return profile_for_user(db, user)
+
+
+@app.get("/discover")
+def discover(request: Request, limit: int = 20):
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        results = []
+        if user.role == "startup":
+            source = db.get(StartupProfile, user.id)
+            if not source:
+                return {"items": [], "message": "Complete your startup profile first."}
+            seen = {item.target_id for item in db.query(Connection).filter(Connection.user_id == user.id).all()}
+            for target in db.query(User).filter(User.role == "investor", User.id != user.id).limit(limit).all():
+                if target.id in seen:
+                    continue
+                investor = db.get(InvestorProfile, target.id)
+                if not investor:
+                    continue
+                score, strong, mismatch = score_profiles(source, investor)
+                results.append({"user_id": target.id, "role": "investor", "name": target.name, "profile_picture": target.profile_picture, "profile": profile_public(target, investor=investor)["investor"], "match": {"percentage": score, "strong_alignment": strong, "potential_mismatch": mismatch}})
+        else:
+            source = db.get(InvestorProfile, user.id)
+            if not source:
+                return {"items": [], "message": "Complete your investor profile first."}
+            seen = {item.target_id for item in db.query(Connection).filter(Connection.user_id == user.id).all()}
+            for target in db.query(User).filter(User.role == "startup", User.id != user.id).limit(limit).all():
+                if target.id in seen:
+                    continue
+                startup = db.get(StartupProfile, target.id)
+                if not startup:
+                    continue
+                score, strong, mismatch = score_profiles(startup, source)
+                results.append({"user_id": target.id, "role": "startup", "name": target.name, "profile_picture": target.profile_picture, "profile": profile_public(target, startup=startup)["startup"], "match": {"percentage": score, "strong_alignment": strong, "potential_mismatch": mismatch}})
+        results.sort(key=lambda item: item["match"]["percentage"], reverse=True)
+        return {"items": results}
+
+
+@app.post("/connections")
+def create_connection(body: ConnectionRequest, request: Request):
+    if body.action not in {"pass", "interested", "connect"} or body.target_type not in {"startup", "investor"}:
+        raise HTTPException(422, "Unsupported connection action or target type")
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        target = db.get(User, body.target_id)
+        if not target or target.id == user.id or target.role != body.target_type:
+            raise HTTPException(404, "Target profile not found")
+        existing = db.query(Connection).filter(Connection.user_id == user.id, Connection.target_id == target.id).first()
+        if existing:
+            existing.action = body.action
+        else:
+            existing = Connection(user_id=user.id, target_id=target.id, target_type=body.target_type, action=body.action)
+            db.add(existing)
+        db.commit()
+        return {"id": existing.id, "action": existing.action, "target_id": target.id}
+
+
+@app.get("/connections")
+def list_connections(request: Request):
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        outgoing = db.query(Connection).filter(Connection.user_id == user.id, Connection.action.in_(["connect", "interested", "accepted"])).all()
+        incoming = db.query(Connection).filter(Connection.target_id == user.id, Connection.action.in_(["connect", "interested", "accepted"])).all()
+        items = []
+        for connection in outgoing + incoming:
+            other_id = connection.target_id if connection.user_id == user.id else connection.user_id
+            other = db.get(User, other_id)
+            if other:
+                items.append({"id": connection.id, "user_id": other.id, "name": other.name, "role": other.role, "action": connection.action, "incoming": connection.target_id == user.id})
+        return {"connections": items}
+
+
+@app.post("/connections/{connection_id}/accept")
+def accept_connection(connection_id: str, request: Request):
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        connection = db.get(Connection, connection_id)
+        if not connection or connection.target_id != user.id:
+            raise HTTPException(404, "Connection request not found")
+        connection.action = "accepted"
+        db.commit()
+        return {"id": connection.id, "action": connection.action}
+
+
+@app.post("/ai/chat")
+def ai_chat(body: AiChatRequest, request: Request):
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        context = profile_for_user(db, user)
+        if user.role == "startup":
+            records = discover(request, limit=10)["items"]
+        else:
+            records = discover(request, limit=10)["items"]
+        if client is None:
+            return {"answer": "Groq is not configured. Add GROQ_API_KEY to ask the AI assistant.", "sources": records}
+        prompt = json.dumps({"user": context, "discoverable_profiles": records}, default=str)
+        answer = ask_groq(
+            "You are VentureLink's deal-flow assistant. Answer only from the supplied database context. If a fact is missing, say it is unavailable. Be concise and actionable.",
+            f"Question: {body.question}\nDatabase context:\n{prompt[:18000]}",
+        )
+        return {"answer": answer, "sources": [{"user_id": item["user_id"], "name": item["name"]} for item in records]}
+
+
+@app.post("/ai/intro/{target_id}")
+def ai_intro(target_id: str, request: Request):
+    with SessionLocal() as db:
+        user = get_authenticated_user(request, db)
+        target = db.get(User, target_id)
+        if not target or target.id == user.id:
+            raise HTTPException(404, "Profile not found")
+        own = profile_for_user(db, user)
+        other = profile_for_user(db, target)
+        if client is None:
+            return {"message": "Groq is not configured. Add GROQ_API_KEY to generate an introduction."}
+        message = ask_groq(
+            "Write a short, warm VentureLink introduction based only on the two supplied profiles and their stated match data. Do not invent facts.",
+            f"MY PROFILE:\n{json.dumps(own)}\nTARGET PROFILE:\n{json.dumps(other)}",
+        )
+        return {"message": message}
 
 
 @app.post("/investor/register")
